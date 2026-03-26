@@ -1,0 +1,743 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Arroyo TEC Gateway</title>
+<style>
+  :root {
+    --bg:           #0c0e11;
+    --bg-card:      #14171c;
+    --bg-card-hover:#191d24;
+    --bg-detail:    #181c22;
+    --border:       #262b33;
+    --border-light: #333a45;
+    --text:         #d4d8de;
+    --text-dim:     #7a8290;
+    --text-bright:  #eef0f3;
+    --accent:       #3b82f6;
+    --green:        #22c55e;
+    --green-dim:    #16532e;
+    --amber:        #f59e0b;
+    --amber-dim:    #5c3d0a;
+    --red:          #ef4444;
+    --red-dim:      #5c1a1a;
+    --grey:         #555d6b;
+    --grey-dim:     #2a2e35;
+    --mono:         'Menlo', 'Consolas', 'Monaco', 'Liberation Mono', monospace;
+    --sans:         system-ui, -apple-system, 'Segoe UI', sans-serif;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: var(--sans);
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ── Header ──────────────────────────────────────────────── */
+
+  .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 24px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+  .header-title {
+    font-family: var(--mono);
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: var(--text-bright);
+    text-transform: uppercase;
+  }
+  .header-status {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    font-size: 13px;
+    color: var(--text-dim);
+  }
+  .connection-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--green);
+    display: inline-block;
+    margin-right: 4px;
+    animation: pulse-dot 2s ease-in-out infinite;
+  }
+  .connection-dot.degraded { background: var(--amber); }
+  .connection-dot.disconnected { background: var(--red); animation: none; }
+
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  /* ── Lock banner ─────────────────────────────────────────── */
+
+  .lock-banner {
+    padding: 8px 24px;
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.05em;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .lock-banner.daq { background: #111418; color: var(--text-dim); }
+  .lock-banner .lock-icon { font-size: 14px; }
+
+  /* ── Device group ────────────────────────────────────────── */
+
+  .devices-container { padding: 20px 24px 40px; }
+
+  .device-group {
+    margin-bottom: 24px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .device-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    background: #111418;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+  }
+  .device-name {
+    font-family: var(--mono);
+    font-weight: 600;
+    color: var(--text-bright);
+    font-size: 14px;
+  }
+  .device-meta {
+    color: var(--text-dim);
+    font-family: var(--mono);
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .channels-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 1px;
+    background: var(--border);
+  }
+
+  /* ── Channel card ────────────────────────────────────────── */
+
+  .channel-card {
+    background: var(--bg-card);
+    padding: 16px;
+    cursor: pointer;
+    transition: background 0.15s;
+    position: relative;
+  }
+  .channel-card:hover { background: var(--bg-card-hover); }
+
+  .channel-card.alarm {
+    border-left: 3px solid var(--red);
+  }
+  .channel-card.disconnected {
+    opacity: 0.45;
+    pointer-events: none;
+  }
+  .channel-card.disconnected::after {
+    content: "DISCONNECTED";
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    color: var(--text-dim);
+    background: rgba(12, 14, 17, 0.7);
+  }
+
+  .ch-label {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-dim);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .ch-temp {
+    font-family: var(--mono);
+    font-size: 32px;
+    font-weight: 700;
+    color: var(--text-bright);
+    line-height: 1;
+    margin-bottom: 2px;
+  }
+  .ch-temp .unit { font-size: 18px; font-weight: 400; color: var(--text-dim); }
+
+  .ch-setpoint {
+    font-family: var(--mono);
+    font-size: 13px;
+    color: var(--text-dim);
+    margin-bottom: 12px;
+  }
+
+  .ch-readings {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px 12px;
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  .ch-readings dt { color: var(--text-dim); }
+  .ch-readings dd { color: var(--text); text-align: right; }
+
+  .ch-output-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    padding: 2px 8px;
+    border-radius: 3px;
+  }
+  .ch-output-badge.on {
+    background: var(--green-dim);
+    color: var(--green);
+  }
+  .ch-output-badge.off {
+    background: var(--grey-dim);
+    color: var(--grey);
+  }
+  .ch-output-badge.alarm-active {
+    background: var(--red-dim);
+    color: var(--red);
+  }
+  .ch-output-badge .dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+  }
+
+  /* ── Channel detail panel ────────────────────────────────── */
+
+  .detail-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.6);
+    z-index: 200;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    backdrop-filter: blur(2px);
+  }
+  .detail-overlay.open { display: flex; }
+
+  .detail-panel {
+    background: var(--bg-detail);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    width: 420px;
+    max-width: 95vw;
+    max-height: 90vh;
+    overflow-y: auto;
+    padding: 24px;
+    position: relative;
+  }
+  .detail-close {
+    position: absolute;
+    top: 12px; right: 12px;
+    background: none; border: none;
+    color: var(--text-dim);
+    font-size: 20px;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 4px;
+  }
+  .detail-close:hover { background: var(--border); color: var(--text); }
+
+  .detail-title {
+    font-family: var(--mono);
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--text-bright);
+    margin-bottom: 20px;
+    padding-right: 32px;
+  }
+
+  .detail-section {
+    margin-bottom: 20px;
+  }
+  .detail-section-title {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    margin-bottom: 10px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .detail-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 4px 0;
+    font-size: 13px;
+  }
+  .detail-row .label { color: var(--text-dim); }
+  .detail-row .value {
+    font-family: var(--mono);
+    font-weight: 600;
+    color: var(--text-bright);
+  }
+
+  /* ── Trend chart ─────────────────────────────────────────── */
+
+  .trend-container {
+    margin: 16px 0;
+    background: #0f1114;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px;
+    height: 120px;
+    position: relative;
+  }
+  .trend-canvas { width: 100%; height: 100%; }
+  .trend-label {
+    position: absolute;
+    top: 6px; left: 10px;
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--text-dim);
+    letter-spacing: 0.05em;
+  }
+
+  /* ── Footer controls ─────────────────────────────────────── */
+
+  .footer-bar {
+    padding: 12px 24px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 13px;
+    color: var(--text-dim);
+    background: var(--bg);
+    position: sticky;
+    bottom: 0;
+  }
+  .footer-bar a {
+    color: var(--accent);
+    text-decoration: none;
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.04em;
+  }
+  .footer-bar a:hover { text-decoration: underline; }
+
+  /* ── Degraded indicator ──────────────────────────────────── */
+
+  .cache-age-warning {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--amber);
+    padding: 2px 6px;
+    background: var(--amber-dim);
+    border-radius: 3px;
+    display: none;
+  }
+  .cache-age-warning.visible { display: inline-block; }
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<div class="header">
+  <div class="header-title">Arroyo TEC Gateway</div>
+  <div class="header-status">
+    <span><span class="connection-dot" id="globalDot"></span> <span id="globalStatus">Connecting…</span></span>
+    <span id="clockDisplay" style="font-family: var(--mono); font-size: 12px;"></span>
+  </div>
+</div>
+
+<!-- Lock banner -->
+<div class="lock-banner daq" id="lockBanner">
+  <span class="lock-icon">◇</span>
+  <span>Lock: DAQ owns — gateway is read-only</span>
+</div>
+
+<!-- Devices -->
+<div class="devices-container" id="devicesContainer">
+  <!-- Populated by JS -->
+</div>
+
+<!-- Footer -->
+<div class="footer-bar">
+  <span id="lastUpdate">Waiting for data…</span>
+  <a href="/api/v1/audit/log" target="_blank">Audit Log ↗</a>
+</div>
+
+<!-- Detail overlay -->
+<div class="detail-overlay" id="detailOverlay">
+  <div class="detail-panel" id="detailPanel">
+    <button class="detail-close" onclick="closeDetail()">✕</button>
+    <div id="detailContent"></div>
+  </div>
+</div>
+
+<script>
+// ── State ─────────────────────────────────────────────────────────
+
+let state = { devices: [] };
+let trendData = {};  // key: "deviceId-ch" → array of {t, temp}
+const TREND_MAX_POINTS = 600;  // 10 minutes at 1 Hz
+let selectedChannel = null;  // {deviceId, ch}
+
+// ── SSE connection ────────────────────────────────────────────────
+
+function connectSSE() {
+  const evtSource = new EventSource('/api/v1/events');
+  const dot = document.getElementById('globalDot');
+  const status = document.getElementById('globalStatus');
+
+  evtSource.onopen = () => {
+    dot.className = 'connection-dot';
+    status.textContent = 'Connected';
+  };
+
+  evtSource.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      state = data;
+      updateTrendData(data);
+      render(data);
+    } catch (e) {
+      console.error('Parse error:', e);
+    }
+  };
+
+  evtSource.onerror = () => {
+    dot.className = 'connection-dot disconnected';
+    status.textContent = 'Connection lost — retrying…';
+    evtSource.close();
+    setTimeout(connectSSE, 3000);
+  };
+}
+
+// ── Trend data accumulation ───────────────────────────────────────
+
+function updateTrendData(data) {
+  const now = Date.now();
+  for (const dev of data.devices) {
+    for (const ch of dev.channels) {
+      const key = dev.id + '-' + ch.channel;
+      if (!trendData[key]) trendData[key] = [];
+      trendData[key].push({ t: now, temp: ch.primary.actual_temp });
+      if (trendData[key].length > TREND_MAX_POINTS) {
+        trendData[key] = trendData[key].slice(-TREND_MAX_POINTS);
+      }
+    }
+  }
+}
+
+// ── Render ─────────────────────────────────────────────────────────
+
+function render(data) {
+  const container = document.getElementById('devicesContainer');
+  const lastUpdate = document.getElementById('lastUpdate');
+  const clock = document.getElementById('clockDisplay');
+
+  clock.textContent = new Date().toLocaleTimeString('en-GB', { hour12: false });
+
+  // Check if any device is disconnected
+  const allOk = data.devices.every(d => d.connection_quality === 'ok');
+  const anyDisconnected = data.devices.some(d => d.connection_quality === 'disconnected');
+  const dot = document.getElementById('globalDot');
+  if (anyDisconnected) {
+    dot.className = 'connection-dot disconnected';
+  } else if (!allOk) {
+    dot.className = 'connection-dot degraded';
+  } else {
+    dot.className = 'connection-dot';
+  }
+
+  // Build device groups
+  let html = '';
+  for (const dev of data.devices) {
+    const qualityLabel = dev.connection_quality === 'ok' ? 'connected'
+                       : dev.connection_quality === 'degraded' ? 'degraded'
+                       : 'disconnected';
+    const qualityColor = dev.connection_quality === 'ok' ? 'var(--green)'
+                       : dev.connection_quality === 'degraded' ? 'var(--amber)'
+                       : 'var(--red)';
+
+    html += `<div class="device-group">
+      <div class="device-header">
+        <span class="device-name">${esc(dev.name)}</span>
+        <span class="device-meta">
+          <span>${esc(dev.ip)}:${dev.port}</span>
+          <span style="color:${qualityColor}">${qualityLabel}</span>
+          ${dev.cache_age_ms > 3000 ? `<span class="cache-age-warning visible">${(dev.cache_age_ms/1000).toFixed(0)}s stale</span>` : ''}
+        </span>
+      </div>
+      <div class="channels-grid">`;
+
+    for (const ch of dev.channels) {
+      const p = ch.primary;
+      const isDisconnected = dev.connection_quality === 'disconnected';
+      const hasAlarm = p.alarm_summary !== 'NONE';
+      const cardClass = [
+        'channel-card',
+        isDisconnected ? 'disconnected' : '',
+        hasAlarm ? 'alarm' : '',
+      ].filter(Boolean).join(' ');
+
+      let badgeClass, badgeText;
+      if (hasAlarm) {
+        badgeClass = 'alarm-active';
+        badgeText = p.alarm_summary;
+      } else if (p.output_state) {
+        badgeClass = 'on';
+        badgeText = 'ON';
+      } else {
+        badgeClass = 'off';
+        badgeText = 'OFF';
+      }
+
+      html += `<div class="${cardClass}" onclick="openDetail('${dev.id}', ${ch.channel})">
+        <div class="ch-label">
+          <span>CH ${ch.channel}</span>
+          <span class="ch-output-badge ${badgeClass}"><span class="dot"></span>${badgeText}</span>
+        </div>
+        <div class="ch-temp">${p.output_state ? p.actual_temp.toFixed(2) : '—'}<span class="unit">°C</span></div>
+        <div class="ch-setpoint">set ${p.setpoint.toFixed(1)}°C</div>
+        <dl class="ch-readings">
+          <dt>I</dt><dd>${p.output_state ? p.current.toFixed(2) + ' A' : '—'}</dd>
+          <dt>V</dt><dd>${p.output_state ? p.voltage.toFixed(2) + ' V' : '—'}</dd>
+        </dl>
+      </div>`;
+    }
+
+    html += `</div></div>`;
+  }
+
+  container.innerHTML = html;
+  lastUpdate.textContent = 'Last update: ' + new Date().toLocaleTimeString('en-GB', { hour12: false });
+
+  // Refresh detail panel if open
+  if (selectedChannel) {
+    renderDetail(selectedChannel.deviceId, selectedChannel.ch);
+  }
+}
+
+// ── Detail panel ──────────────────────────────────────────────────
+
+function openDetail(deviceId, ch) {
+  selectedChannel = { deviceId, ch };
+  document.getElementById('detailOverlay').classList.add('open');
+  renderDetail(deviceId, ch);
+}
+
+function closeDetail() {
+  selectedChannel = null;
+  document.getElementById('detailOverlay').classList.remove('open');
+}
+
+// Close on overlay click (not panel click)
+document.getElementById('detailOverlay').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) closeDetail();
+});
+
+// Close on Escape
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeDetail();
+});
+
+function renderDetail(deviceId, ch) {
+  const dev = state.devices?.find(d => d.id === deviceId);
+  if (!dev) return;
+  const chData = dev.channels?.find(c => c.channel === ch);
+  if (!chData) return;
+
+  const p = chData.primary;
+  const d = chData.diagnostic;
+  const sl = chData.software_limits;
+
+  let html = `
+    <div class="detail-title">${esc(dev.name)} — Channel ${ch}</div>
+
+    <div class="detail-section">
+      <div class="detail-section-title">Primary</div>
+      <div class="detail-row"><span class="label">Actual temperature</span><span class="value">${p.actual_temp.toFixed(2)} °C</span></div>
+      <div class="detail-row"><span class="label">Setpoint</span><span class="value">${p.setpoint.toFixed(2)} °C</span></div>
+      <div class="detail-row"><span class="label">Output current</span><span class="value">${p.current.toFixed(2)} A</span></div>
+      <div class="detail-row"><span class="label">TEC voltage</span><span class="value">${p.voltage.toFixed(2)} V</span></div>
+      <div class="detail-row"><span class="label">Output</span><span class="value">${p.output_state ? 'ON' : 'OFF'}</span></div>
+      <div class="detail-row"><span class="label">Alarm</span><span class="value" style="color: ${p.alarm_summary !== 'NONE' ? 'var(--red)' : 'var(--green)'}">${p.alarm_summary}</span></div>
+    </div>
+
+    <div class="trend-container">
+      <span class="trend-label">Temperature — last ${getTrendDuration(deviceId, ch)}</span>
+      <canvas class="trend-canvas" id="trendCanvas"></canvas>
+    </div>
+
+    <div class="detail-section">
+      <div class="detail-section-title">Diagnostics (Tier 1b)</div>
+      <div class="detail-row"><span class="label">Current limit</span><span class="value">${d.current_limit.toFixed(2)} A</span></div>
+      <div class="detail-row"><span class="label">Voltage limit</span><span class="value">${d.voltage_limit.toFixed(2)} V</span></div>
+      ${sl.temp_min != null ? `<div class="detail-row"><span class="label">Temp window</span><span class="value">${sl.temp_min}–${sl.temp_max} °C</span></div>` : ''}
+      <div class="detail-row"><span class="label">Sensor raw</span><span class="value">${d.sensor_raw}</span></div>
+      <div class="detail-row"><span class="label">Control mode</span><span class="value">${d.control_mode}</span></div>
+      <div class="detail-row"><span class="label">Fan</span><span class="value">${d.fan_state ? 'ON' : 'OFF'}</span></div>
+      <div class="detail-row"><span class="label">Alarm raw</span><span class="value">0x${d.alarm_raw.toString(16).toUpperCase().padStart(2, '0')}</span></div>
+    </div>
+
+    <div class="detail-section" style="color: var(--text-dim); font-size: 12px; font-style: italic;">
+      Phase 1 — read-only view. Maintenance controls available in Phase 2.
+    </div>
+  `;
+
+  document.getElementById('detailContent').innerHTML = html;
+
+  // Draw trend after DOM update
+  requestAnimationFrame(() => drawTrend(deviceId, ch));
+}
+
+function getTrendDuration(deviceId, ch) {
+  const key = deviceId + '-' + ch;
+  const pts = trendData[key] || [];
+  if (pts.length < 2) return '—';
+  const dur = (pts[pts.length-1].t - pts[0].t) / 1000;
+  if (dur < 60) return dur.toFixed(0) + 's';
+  return (dur / 60).toFixed(1) + ' min';
+}
+
+// ── Trend chart (lightweight canvas) ──────────────────────────────
+
+function drawTrend(deviceId, ch) {
+  const canvas = document.getElementById('trendCanvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const rect = canvas.parentElement.getBoundingClientRect();
+  canvas.width = rect.width - 24;
+  canvas.height = rect.height - 24;
+  const W = canvas.width;
+  const H = canvas.height;
+
+  const key = deviceId + '-' + ch;
+  const pts = trendData[key] || [];
+
+  ctx.clearRect(0, 0, W, H);
+
+  if (pts.length < 2) {
+    ctx.fillStyle = '#555d6b';
+    ctx.font = '11px Menlo, Consolas, monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('Accumulating data…', W / 2, H / 2);
+    return;
+  }
+
+  // Find range
+  let minT = Infinity, maxT = -Infinity;
+  for (const p of pts) {
+    if (p.temp < minT) minT = p.temp;
+    if (p.temp > maxT) maxT = p.temp;
+  }
+  // Pad range
+  const range = maxT - minT;
+  const pad = range < 0.1 ? 0.5 : range * 0.2;
+  minT -= pad;
+  maxT += pad;
+
+  const t0 = pts[0].t;
+  const t1 = pts[pts.length - 1].t;
+  const tRange = t1 - t0 || 1;
+
+  // Grid lines
+  ctx.strokeStyle = '#1e2228';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = Math.round((i / 4) * H) + 0.5;
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(W, y);
+    ctx.stroke();
+  }
+
+  // Temperature line
+  ctx.beginPath();
+  ctx.strokeStyle = '#3b82f6';
+  ctx.lineWidth = 1.5;
+  ctx.lineJoin = 'round';
+  for (let i = 0; i < pts.length; i++) {
+    const x = ((pts[i].t - t0) / tRange) * W;
+    const y = H - ((pts[i].temp - minT) / (maxT - minT)) * H;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  // Setpoint line (dashed)
+  const dev = state.devices?.find(d => d.id === deviceId);
+  const chData = dev?.channels?.find(c => c.channel === ch);
+  if (chData) {
+    const sp = chData.primary.setpoint;
+    const spY = H - ((sp - minT) / (maxT - minT)) * H;
+    if (spY > 0 && spY < H) {
+      ctx.beginPath();
+      ctx.setLineDash([4, 4]);
+      ctx.strokeStyle = '#22c55e44';
+      ctx.lineWidth = 1;
+      ctx.moveTo(0, spY);
+      ctx.lineTo(W, spY);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+  }
+
+  // Y-axis labels
+  ctx.fillStyle = '#555d6b';
+  ctx.font = '10px Menlo, Consolas, monospace';
+  ctx.textAlign = 'right';
+  ctx.fillText(maxT.toFixed(2), W - 2, 10);
+  ctx.fillText(minT.toFixed(2), W - 2, H - 2);
+}
+
+// ── Utilities ─────────────────────────────────────────────────────
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+// ── Init ──────────────────────────────────────────────────────────
+
+connectSSE();
+</script>
+</body>
+</html>

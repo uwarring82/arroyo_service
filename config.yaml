@@ -1,0 +1,43 @@
+# Arroyo TEC Gateway — Configuration
+# See blueprint §12 for full specification.
+
+gateway:
+  host: "127.0.0.1"
+  port: 8400
+  driver_mode: "simulator"     # "simulator" | "hardware"
+  poll_rate_hz: 1.0
+  poll_failure_threshold: 3        # consecutive failures → 'disconnected'
+  inactivity_lock_minutes: 10
+
+devices:
+  - id: "arroyo-1"
+    name: "Cryostat East"
+    ip: "192.168.1.10"
+    port: 10001
+    channels: 4
+    software_limits:
+      ch1: { temp_min: 15.0, temp_max: 30.0, current_max: 2.0, voltage_max: 8.0 }
+      ch2: { temp_min: 10.0, temp_max: 35.0, current_max: 3.0, voltage_max: 10.0 }
+      ch3: { temp_min: 15.0, temp_max: 30.0, current_max: 2.0, voltage_max: 8.0 }
+      ch4: { temp_min: 15.0, temp_max: 30.0, current_max: 2.0, voltage_max: 8.0 }
+
+# Uncomment and adjust for additional devices:
+#  - id: "arroyo-2"
+#    name: "Cryostat West"
+#    ip: "192.168.1.11"
+#    port: 10001
+#    channels: 4
+#    software_limits:
+#      ch1: { temp_min: 15.0, temp_max: 30.0, current_max: 2.0, voltage_max: 8.0 }
+#      ch2: { temp_min: 15.0, temp_max: 30.0, current_max: 2.0, voltage_max: 8.0 }
+#      ch3: { temp_min: 15.0, temp_max: 30.0, current_max: 2.0, voltage_max: 8.0 }
+#      ch4: { temp_min: 15.0, temp_max: 30.0, current_max: 2.0, voltage_max: 8.0 }
+
+auth:
+  token_expiry_hours: 4
+  max_failed_logins: 5
+
+daq_integration:
+  mode: "manual"          # "manual" | "flag_file" | "api"
+  flag_file_path: null
+  api_url: null

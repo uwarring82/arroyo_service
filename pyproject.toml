@@ -1,0 +1,17 @@
+[project]
+name = "arroyo-gateway"
+version = "0.1.0"
+description = "Arroyo TEC Gateway — Phase 1 Read-Only Dashboard"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "pyyaml>=6.0",
+    "aiosqlite>=0.20",
+]
+
+[project.scripts]
+arroyo-gateway = "arroyo_gateway.main:run"
+
+[tool.setuptools.packages.find]
+include = ["arroyo_gateway*"]
