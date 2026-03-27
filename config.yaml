@@ -8,6 +8,9 @@ gateway:
   poll_rate_hz: 1.0
   poll_failure_threshold: 3        # consecutive failures → 'disconnected'
   inactivity_lock_minutes: 10
+  lock_timeout_minutes: 15         # maintenance lock expiry
+  stability_check_cycles: 2        # polling cycles before stability verdict
+  large_setpoint_change_threshold: 5.0  # °C, triggers extra confirmation
 
 devices:
   - id: "arroyo-1"
@@ -36,6 +39,10 @@ devices:
 auth:
   token_expiry_hours: 4
   max_failed_logins: 5
+  # Phase 2: config-based role bypass (no login required).
+  # Remove or set to null when real auth is implemented in Phase 3.
+  default_user: "technician"
+  default_role: "technician"        # "viewer" | "technician" | "admin"
 
 daq_integration:
   mode: "manual"          # "manual" | "flag_file" | "api"

@@ -35,6 +35,9 @@ class GatewayConfig:
     poll_failure_threshold: int = 3
     inactivity_lock_minutes: int = 10
     driver_mode: str = "simulator"  # "simulator" | "hardware"
+    lock_timeout_minutes: float = 15.0
+    stability_check_cycles: int = 2
+    large_setpoint_change_threshold: float = 5.0
 
 
 @dataclass
@@ -77,6 +80,9 @@ def load_config(path: str | pathlib.Path = "config.yaml") -> Config:
         poll_failure_threshold=int(gw_raw.get("poll_failure_threshold", 3)),
         inactivity_lock_minutes=int(gw_raw.get("inactivity_lock_minutes", 10)),
         driver_mode=str(gw_raw.get("driver_mode", "simulator")),
+        lock_timeout_minutes=float(gw_raw.get("lock_timeout_minutes", 15.0)),
+        stability_check_cycles=int(gw_raw.get("stability_check_cycles", 2)),
+        large_setpoint_change_threshold=float(gw_raw.get("large_setpoint_change_threshold", 5.0)),
     )
 
     devices: list[DeviceConfig] = []

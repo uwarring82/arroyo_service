@@ -65,12 +65,12 @@ class AuditStore:
         readback_ok: Optional[bool] = None,
         ref_event: Optional[int] = None,
         notes: Optional[str] = None,
-    ) -> None:
-        """Append one audit entry."""
+    ) -> Optional[int]:
+        """Append one audit entry. Returns the row ID."""
         if not self._db:
-            return
+            return None
         ts = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        await self._db.execute(
+        cursor = await self._db.execute(
             """\
             INSERT INTO audit_log
                 (timestamp, user, role, device_id, channel, action,
@@ -85,6 +85,7 @@ class AuditStore:
             ),
         )
         await self._db.commit()
+        return cursor.lastrowid
 
     async def recent(self, limit: int = 100) -> list[dict]:
         """Return the most recent audit entries (newest first)."""

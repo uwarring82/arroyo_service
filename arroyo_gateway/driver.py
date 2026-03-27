@@ -218,6 +218,75 @@ class ArroyoDriver:
         self.status.last_poll_time = time.time()
         return True
 
+    # ── Write methods (Phase 2) ────────────────────────────────────
+
+    async def set_setpoint(self, ch: int, value: float) -> tuple[Optional[str], Optional[float]]:
+        """Set temperature setpoint. Returns (raw_command, readback_value) or (None, None) on failure."""
+        cmd = f"TEC:T {ch} {value:.3f}"
+        resp = await self._send_command(cmd)
+        if resp is None:
+            return None, None
+        # Readback
+        rb_cmd = f"TEC:SET:T? {ch}"
+        rb_resp = await self._send_command(rb_cmd)
+        if rb_resp is None:
+            return cmd, None
+        try:
+            rb_val = float("".join(c for c in rb_resp if c in "0123456789.-+eE"))
+            self.status.channels[ch - 1].setpoint = rb_val
+            return cmd, rb_val
+        except (ValueError, TypeError):
+            return cmd, None
+
+    async def set_output(self, ch: int, state: bool) -> tuple[Optional[str], Optional[bool]]:
+        """Set output on/off. Returns (raw_command, readback_state) or (None, None) on failure."""
+        cmd = f"TEC:OUT {ch} {'1' if state else '0'}"
+        resp = await self._send_command(cmd)
+        if resp is None:
+            return None, None
+        # Readback
+        rb_cmd = f"TEC:OUT? {ch}"
+        rb_resp = await self._send_command(rb_cmd)
+        if rb_resp is None:
+            return cmd, None
+        rb_state = rb_resp.strip() not in ("0", "OFF")
+        self.status.channels[ch - 1].output_state = rb_state
+        return cmd, rb_state
+
+    async def set_current_limit(self, ch: int, value: float) -> tuple[Optional[str], Optional[float]]:
+        """Set current limit. Returns (raw_command, readback_value) or (None, None) on failure."""
+        cmd = f"TEC:LIM:ITE {ch} {value:.3f}"
+        resp = await self._send_command(cmd)
+        if resp is None:
+            return None, None
+        rb_cmd = f"TEC:LIM:ITE? {ch}"
+        rb_resp = await self._send_command(rb_cmd)
+        if rb_resp is None:
+            return cmd, None
+        try:
+            rb_val = float("".join(c for c in rb_resp if c in "0123456789.-+eE"))
+            self.status.channels[ch - 1].current_limit = rb_val
+            return cmd, rb_val
+        except (ValueError, TypeError):
+            return cmd, None
+
+    async def set_voltage_limit(self, ch: int, value: float) -> tuple[Optional[str], Optional[float]]:
+        """Set voltage limit. Returns (raw_command, readback_value) or (None, None) on failure."""
+        cmd = f"TEC:LIM:V {ch} {value:.3f}"
+        resp = await self._send_command(cmd)
+        if resp is None:
+            return None, None
+        rb_cmd = f"TEC:LIM:V? {ch}"
+        rb_resp = await self._send_command(rb_cmd)
+        if rb_resp is None:
+            return cmd, None
+        try:
+            rb_val = float("".join(c for c in rb_resp if c in "0123456789.-+eE"))
+            self.status.channels[ch - 1].voltage_limit = rb_val
+            return cmd, rb_val
+        except (ValueError, TypeError):
+            return cmd, None
+
     async def _poll_loop(self) -> None:
         """Main polling loop with reconnection and graceful degradation."""
         backoff_idx = 0
@@ -335,3 +404,25 @@ class SimulatedDriver:
                 ch.alarm_summary = "NONE"
             self.status.last_poll_time = time.time()
             await asyncio.sleep(self._poll_period)
+
+    # ── Write methods (Phase 2) ────────────────────────────────────
+
+    async def set_setpoint(self, ch: int, value: float) -> tuple[Optional[str], Optional[float]]:
+        cmd = f"TEC:T {ch} {value:.3f}"
+        self.status.channels[ch - 1].setpoint = value
+        return cmd, value
+
+    async def set_output(self, ch: int, state: bool) -> tuple[Optional[str], Optional[bool]]:
+        cmd = f"TEC:OUT {ch} {'1' if state else '0'}"
+        self.status.channels[ch - 1].output_state = state
+        return cmd, state
+
+    async def set_current_limit(self, ch: int, value: float) -> tuple[Optional[str], Optional[float]]:
+        cmd = f"TEC:LIM:ITE {ch} {value:.3f}"
+        self.status.channels[ch - 1].current_limit = value
+        return cmd, value
+
+    async def set_voltage_limit(self, ch: int, value: float) -> tuple[Optional[str], Optional[float]]:
+        cmd = f"TEC:LIM:V {ch} {value:.3f}"
+        self.status.channels[ch - 1].voltage_limit = value
+        return cmd, value
