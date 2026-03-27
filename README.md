@@ -1,24 +1,23 @@
-# Arroyo TEC Gateway — Phase 1
+# Arroyo TEC Gateway — Phase 2
 
-Read-only maintenance dashboard for Arroyo Instruments 7154-05-12
-multi-channel TEC controllers.
+Maintenance gateway for Arroyo Instruments 7154-05-12 multi-channel
+TEC controllers. Read-only dashboard plus bounded writes with
+maintenance lock, readback verification, and stability checking.
 
-See `arroyo-tec-gateway-blueprint-v0.2.md` for full architectural
-specification.
+See `arroyo-tec-gateway-blueprint-v0.2.3.md` for the frozen
+architectural specification.
+
+**Status:** bench-test prototype. Not production-ready.
+See "Known Limitations" below.
 
 ## Quickstart
 
 ```bash
-# 1. Create virtual environment
 python3 -m venv .venv
 source .venv/bin/activate
-
-# 2. Install dependencies
 pip install -e .
 
-# 3. Edit config.yaml with your device IPs/names
-
-# 4. Run (simulator mode by default — no hardware needed)
+# Edit config.yaml: set device IPs, driver_mode, software limits
 python -m arroyo_gateway.main
 ```
 
@@ -26,51 +25,72 @@ Open `http://localhost:8400` in a browser.
 
 ## Simulator vs. Hardware
 
-The driver mode is controlled in `config.yaml`:
+Controlled via `config.yaml`:
 
 ```yaml
 gateway:
   driver_mode: "simulator"   # "simulator" | "hardware"
 ```
 
-By default the gateway starts with `SimulatedDriver` (no network
-connection to real instruments). To connect to actual Arroyo 7154
-units:
+No source code edits required to switch modes.
 
-1. Set `driver_mode: "hardware"` in `config.yaml`.
-2. Verify your device IPs are reachable on the lab network.
-3. Verify command mnemonics against the 7154-05-12 programming
-   manual (see blueprint §4, Open Question #2).
+## Bench Test Procedure
 
-No source code edits are required to switch modes.
+1. Set `driver_mode: "hardware"` and the real device IP in `config.yaml`.
+2. Start the gateway. Verify the read-only dashboard shows live values.
+3. Validate each query step by step on one channel:
+   `TEC:T?`, `TEC:SET:T?`, `TEC:ITE?`, `TEC:V?`, `TEC:COND?`, `TEC:OUTput?`
+4. Acquire maintenance lock via the UI.
+5. Apply a small setpoint change within the software window.
+6. Toggle output only if the TEC load is safe (non-critical fixture).
+7. Check readback verification and stability confirmation in the audit log.
+
+**Do not** test on a unit that is simultaneously under live DAQ control.
+The code ships with Level A (advisory) locking only.
+
+## Command Set
+
+Verified against the Arroyo Computer Interfacing Manual (Rev 2021-01).
+Channel selection via `TEC:CHAN <n>` before each command group.
+Responses are bare numeric values. Commands terminated by CR/LF.
 
 ## Data Files
 
 The audit database (`audit.db`) is created next to `config.yaml`.
-Its location does not depend on the working directory from which
-the service is started.
+
+## Known Limitations (pre-production)
+
+- **Level A lock only.** Level B cooperative locking is required before
+  deployment on DAQ-coupled instruments (blueprint §5.2).
+- **No authentication.** Config-based `default_user`/`default_role`
+  bypass. Real login/session handling deferred to Phase 3.
+- **Audit access not role-restricted.** All users see all audit entries.
+- **`contested_params` not surfaced.** Stability checker logs events
+  but the status API always returns an empty list.
 
 ## Project Structure
 
 ```
 arroyo-gateway/
 ├── config.yaml                 # Site-specific configuration
-├── pyproject.toml              # Python project metadata
+├── pyproject.toml              # Python project metadata (v0.2.0)
 ├── arroyo_gateway/
-│   ├── __init__.py
 │   ├── app.py                  # FastAPI application
-│   ├── audit.py                # SQLite audit store
+│   ├── audit.py                # SQLite audit store (append-only)
 │   ├── config.py               # Configuration loader
-│   ├── driver.py               # Instrument adapter + simulator
-│   └── main.py                 # Entry point
+│   ├── driver.py               # Arroyo 7154 TCP adapter + simulator
+│   ├── lock.py                 # Per-device maintenance lock manager
+│   ├── main.py                 # Entry point
+│   ├── policy.py               # Software limit validation
+│   └── stability.py            # Post-write stability checker
 └── static/
     └── index.html              # Dashboard UI (no external dependencies)
 ```
 
 ## Phase Roadmap
 
-- **Phase 1** (this release): Read-only dashboard, SSE live updates,
-  simulated and real drivers, audit logging for connection events.
-- **Phase 2**: Maintenance lock (Level B), bounded writes, readback
-  verification, stability checks.
-- **Phase 3**: Admin console, Tier 3 access, DAQ integration, HTTPS.
+- **Phase 1** (done): Read-only dashboard, SSE live updates, audit.
+- **Phase 2** (this release): Maintenance lock (Level A), bounded writes,
+  readback verification, stability checks. Bench-test ready.
+- **Phase 3** (pending): Authentication, Level B/C locking, admin console,
+  Tier 3 access, role-restricted audit, HTTPS.

@@ -1,8 +1,21 @@
-"""Instrument adapter for Arroyo 7154-05-12 TEC controllers.
+"""Instrument adapter for Arroyo 7154 MultiSource TEC controllers.
 
-See blueprint §8.  Each device gets one ArroyoDriver instance running
-its own asyncio task.  A hung socket never blocks the event loop for
-other devices.
+Verified against the Arroyo Computer Interfacing Manual (Rev 2021-01).
+See blueprint §8.
+
+Key protocol facts (from manual):
+  - Multi-channel: use TEC:CHAN <n> to select channel before commands.
+    Commands do NOT take a channel argument directly.
+  - Terminator: CR (ASCII 13) or LF (ASCII 10) or both.
+  - Responses: bare numeric values, no unit suffixes.
+  - Commands are case-insensitive; optional lowercase chars can be omitted.
+  - Alarm state via TEC:COND? (condition register bitmask, not TEC:ALARM?).
+  - Output state via TEC:OUTput / TEC:OUTput? (not TEC:OUT).
+  - Numeric substitutions: 0=OFF, 1=ON accepted.
+  - Network: Telnet on port 10001 (7000 Series MultiSource).
+
+Each device gets one ArroyoDriver instance with its own asyncio task.
+A hung socket never blocks the event loop for other devices.
 
 For development without hardware, SimulatedDriver produces plausible
 readings with gentle noise.
@@ -16,14 +29,46 @@ import math
 import random
 import time
 from dataclasses import dataclass, field
-from typing import Optional, Protocol
+from typing import Optional, Protocol, Callable, Awaitable
 
 logger = logging.getLogger("arroyo.driver")
 
-# Type alias for optional async event callback.
-# Signature: callback(device_id, event_type, detail)
-from typing import Callable, Awaitable
 EventCallback = Optional[Callable[[str, str, str], Awaitable[None]]]
+
+# ── TEC:COND? bitmask definitions (from manual p.12) ──────────────
+
+COND_BITS = {
+    0: "CURRENT_LIMIT",
+    1: "VOLTAGE_LIMIT",
+    2: "RESISTANCE_LIMIT",
+    3: "HIGH_TEMP_LIMIT",
+    4: "LOW_TEMP_LIMIT",
+    5: "SHORTED_SENSOR",
+    6: "OPEN_SENSOR",
+    7: "OPEN_TEC",
+    # 8: unused
+    9: "OUT_OF_TOLERANCE",
+    10: "OUTPUT_ON",
+    # 11: unused
+    12: "THERMAL_RUNAWAY",
+}
+
+def _decode_cond(cond: int) -> str:
+    """Decode TEC:COND? bitmask into human-readable alarm summary.
+
+    Returns 'NONE' if no alarm bits are set (ignoring bit 10 = OUTPUT_ON
+    and bit 9 = OUT_OF_TOLERANCE, which are status, not alarms).
+    """
+    alarm_bits = cond & ~((1 << 10) | (1 << 9))  # mask out status-only bits
+    if alarm_bits == 0:
+        return "NONE"
+    names = []
+    for bit, name in COND_BITS.items():
+        if bit in (9, 10):
+            continue  # skip status bits for alarm summary
+        if cond & (1 << bit):
+            names.append(name)
+    return ", ".join(names) if names else "NONE"
 
 
 # ── Data structures ────────────────────────────────────────────────
@@ -41,9 +86,9 @@ class ChannelStatus:
     # Tier 1b
     current_limit: float = 0.0
     voltage_limit: float = 0.0
-    sensor_raw: float = 0.0
-    control_mode: str = "T"
-    fan_state: bool = True
+    sensor_raw: float = 0.0       # TEC:R? — sensor resistance
+    control_mode: str = "T"       # TEC:MODE? — T, R, or ITE
+    fan_state: bool = True        # TEC:FAN? — fan voltage > 0
 
 
 @dataclass
@@ -71,13 +116,13 @@ class DriverProtocol(Protocol):
     async def stop(self) -> None: ...
 
 
-# ── Real TCP driver (for production use with actual hardware) ──────
+# ── Real TCP driver ────────────────────────────────────────────────
 
 class ArroyoDriver:
-    """Async TCP driver for one Arroyo 7154 device.
+    """Async TCP driver for one Arroyo 7154 MultiSource device.
 
-    Provisional command mnemonics — must be verified against the
-    7154-05-12 programming manual before production use.
+    Commands verified against the Arroyo Computer Interfacing Manual.
+    Channel selection via TEC:CHAN <n> before each query/write group.
     """
 
     BACKOFF_STEPS = [1, 2, 4, 8, 16]
@@ -102,7 +147,7 @@ class ArroyoDriver:
         self._ip = ip
         self._port = port
         self._num_channels = num_channels
-        self._poll_period = 1.0 / poll_rate_hz  # seconds between polls
+        self._poll_period = 1.0 / poll_rate_hz
         self._failure_threshold = failure_threshold
         self._on_event = on_event
         self._reader: Optional[asyncio.StreamReader] = None
@@ -112,7 +157,6 @@ class ArroyoDriver:
         self._running = False
 
     async def _emit(self, event_type: str, detail: str = "") -> None:
-        """Fire the event callback if registered."""
         if self._on_event:
             try:
                 await self._on_event(self.device_id, event_type, detail)
@@ -167,131 +211,217 @@ class ArroyoDriver:
         """Send a command and read one line of response.
 
         Returns None on failure.  All access serialised through _lock.
+        For set commands (no '?'), the instrument may not return a
+        response; in that case we return an empty string on success.
         """
         async with self._lock:
             if not self._writer or not self._reader:
                 return None
             try:
-                self._writer.write((cmd + "\n").encode("ascii"))
+                self._writer.write((cmd + "\r\n").encode("ascii"))
                 await self._writer.drain()
-                response = await asyncio.wait_for(
-                    self._reader.readline(),
-                    timeout=self.RESPONSE_TIMEOUT,
-                )
-                return response.decode("ascii").strip()
+                if "?" in cmd:
+                    # Query — expect a response line
+                    response = await asyncio.wait_for(
+                        self._reader.readline(),
+                        timeout=self.RESPONSE_TIMEOUT,
+                    )
+                    return response.decode("ascii").strip()
+                else:
+                    # Set command — no response expected.
+                    # Brief pause to let instrument process.
+                    await asyncio.sleep(0.05)
+                    return ""
             except (OSError, asyncio.TimeoutError, ConnectionError) as exc:
                 logger.warning("Command failed on %s: %s → %s", self.device_id, cmd, exc)
                 return None
 
+    async def _select_channel(self, ch: int) -> bool:
+        """Select active TEC channel. Must be called before channel-specific commands."""
+        resp = await self._send_command(f"TEC:CHAN {ch}")
+        return resp is not None
+
+    def _parse_float(self, resp: str) -> Optional[float]:
+        """Parse a bare numeric response from the instrument."""
+        try:
+            return float(resp.strip())
+        except (ValueError, TypeError):
+            return None
+
+    # ── Polling ────────────────────────────────────────────────────
+
     async def _poll_once(self) -> bool:
-        """Poll all channels.  Returns True on success."""
+        """Poll all channels. Returns True on full success."""
         for ch_status in self.status.channels:
             ch = ch_status.channel
-            # Provisional commands — verify against manual
-            queries = {
-                "actual_temp": f"TEC:T? {ch}",
-                "setpoint": f"TEC:SET:T? {ch}",
-                "current": f"TEC:ITE? {ch}",
-                "voltage": f"TEC:V? {ch}",
-                "output_state": f"TEC:OUT? {ch}",
-                "alarm_raw": f"TEC:ALARM? {ch}",
-                "current_limit": f"TEC:LIM:ITE? {ch}",
-                "voltage_limit": f"TEC:LIM:V? {ch}",
-            }
-            for attr, cmd in queries.items():
-                resp = await self._send_command(cmd)
-                if resp is None:
-                    return False
-                try:
-                    if attr == "output_state":
-                        setattr(ch_status, attr, resp.strip() not in ("0", "OFF"))
-                    elif attr == "alarm_raw":
-                        ch_status.alarm_raw = int(resp, 0)
-                        ch_status.alarm_summary = "NONE" if ch_status.alarm_raw == 0 else f"ALARM(0x{ch_status.alarm_raw:02X})"
-                    else:
-                        # Strip any unit suffix (e.g. "25.00C" → "25.00")
-                        numeric = "".join(c for c in resp if c in "0123456789.-+eE")
-                        setattr(ch_status, attr, float(numeric))
-                except (ValueError, TypeError) as exc:
-                    logger.warning("Parse error on %s ch%d %s: %r → %s", self.device_id, ch, attr, resp, exc)
-                    return False
+
+            # Select channel first
+            if not await self._select_channel(ch):
+                return False
+
+            # Query actual temperature
+            resp = await self._send_command("TEC:T?")
+            if resp is None:
+                return False
+            val = self._parse_float(resp)
+            if val is not None:
+                ch_status.actual_temp = val
+
+            # Query setpoint
+            resp = await self._send_command("TEC:SET:T?")
+            if resp is None:
+                return False
+            val = self._parse_float(resp)
+            if val is not None:
+                ch_status.setpoint = val
+
+            # Query TEC current
+            resp = await self._send_command("TEC:ITE?")
+            if resp is None:
+                return False
+            val = self._parse_float(resp)
+            if val is not None:
+                ch_status.current = val
+
+            # Query TEC voltage
+            resp = await self._send_command("TEC:V?")
+            if resp is None:
+                return False
+            val = self._parse_float(resp)
+            if val is not None:
+                ch_status.voltage = val
+
+            # Query output state
+            resp = await self._send_command("TEC:OUTput?")
+            if resp is None:
+                return False
+            ch_status.output_state = resp.strip() not in ("0", "OFF", "")
+
+            # Query condition register (alarm bitmask)
+            resp = await self._send_command("TEC:COND?")
+            if resp is None:
+                return False
+            try:
+                ch_status.alarm_raw = int(resp.strip())
+                ch_status.alarm_summary = _decode_cond(ch_status.alarm_raw)
+            except ValueError:
+                ch_status.alarm_raw = 0
+                ch_status.alarm_summary = "PARSE_ERROR"
+
+            # Query current limit
+            resp = await self._send_command("TEC:LIMit:ITE?")
+            if resp is None:
+                return False
+            val = self._parse_float(resp)
+            if val is not None:
+                ch_status.current_limit = val
+
+            # Query voltage limit
+            resp = await self._send_command("TEC:LIMit:V?")
+            if resp is None:
+                return False
+            val = self._parse_float(resp)
+            if val is not None:
+                ch_status.voltage_limit = val
+
+            # Query sensor resistance (Tier 1b)
+            resp = await self._send_command("TEC:R?")
+            if resp is None:
+                return False
+            val = self._parse_float(resp)
+            if val is not None:
+                ch_status.sensor_raw = val
+
+            # Query control mode (Tier 1b)
+            resp = await self._send_command("TEC:MODE?")
+            if resp is None:
+                return False
+            ch_status.control_mode = resp.strip()
+
+            # Query fan state (Tier 1b)
+            resp = await self._send_command("TEC:FAN?")
+            if resp is None:
+                return False
+            val = self._parse_float(resp)
+            if val is not None:
+                ch_status.fan_state = val > 0
+
         self.status.last_poll_time = time.time()
         return True
 
     # ── Write methods (Phase 2) ────────────────────────────────────
 
     async def set_setpoint(self, ch: int, value: float) -> tuple[Optional[str], Optional[float]]:
-        """Set temperature setpoint. Returns (raw_command, readback_value) or (None, None) on failure."""
-        cmd = f"TEC:T {ch} {value:.3f}"
+        """Set temperature setpoint with readback verification."""
+        if not await self._select_channel(ch):
+            return None, None
+        cmd = f"TEC:T {value:.3f}"
         resp = await self._send_command(cmd)
         if resp is None:
             return None, None
         # Readback
-        rb_cmd = f"TEC:SET:T? {ch}"
-        rb_resp = await self._send_command(rb_cmd)
+        rb_resp = await self._send_command("TEC:SET:T?")
         if rb_resp is None:
-            return cmd, None
-        try:
-            rb_val = float("".join(c for c in rb_resp if c in "0123456789.-+eE"))
+            return f"TEC:CHAN {ch};{cmd}", None
+        rb_val = self._parse_float(rb_resp)
+        if rb_val is not None:
             self.status.channels[ch - 1].setpoint = rb_val
-            return cmd, rb_val
-        except (ValueError, TypeError):
-            return cmd, None
+        return f"TEC:CHAN {ch};{cmd}", rb_val
 
     async def set_output(self, ch: int, state: bool) -> tuple[Optional[str], Optional[bool]]:
-        """Set output on/off. Returns (raw_command, readback_state) or (None, None) on failure."""
-        cmd = f"TEC:OUT {ch} {'1' if state else '0'}"
+        """Set output on/off with readback verification."""
+        if not await self._select_channel(ch):
+            return None, None
+        cmd = f"TEC:OUTput {'1' if state else '0'}"
         resp = await self._send_command(cmd)
         if resp is None:
             return None, None
         # Readback
-        rb_cmd = f"TEC:OUT? {ch}"
-        rb_resp = await self._send_command(rb_cmd)
+        rb_resp = await self._send_command("TEC:OUTput?")
         if rb_resp is None:
-            return cmd, None
-        rb_state = rb_resp.strip() not in ("0", "OFF")
+            return f"TEC:CHAN {ch};{cmd}", None
+        rb_state = rb_resp.strip() not in ("0", "OFF", "")
         self.status.channels[ch - 1].output_state = rb_state
-        return cmd, rb_state
+        return f"TEC:CHAN {ch};{cmd}", rb_state
 
     async def set_current_limit(self, ch: int, value: float) -> tuple[Optional[str], Optional[float]]:
-        """Set current limit. Returns (raw_command, readback_value) or (None, None) on failure."""
-        cmd = f"TEC:LIM:ITE {ch} {value:.3f}"
+        """Set current limit with readback verification."""
+        if not await self._select_channel(ch):
+            return None, None
+        cmd = f"TEC:LIMit:ITE {value:.3f}"
         resp = await self._send_command(cmd)
         if resp is None:
             return None, None
-        rb_cmd = f"TEC:LIM:ITE? {ch}"
-        rb_resp = await self._send_command(rb_cmd)
+        rb_resp = await self._send_command("TEC:LIMit:ITE?")
         if rb_resp is None:
-            return cmd, None
-        try:
-            rb_val = float("".join(c for c in rb_resp if c in "0123456789.-+eE"))
+            return f"TEC:CHAN {ch};{cmd}", None
+        rb_val = self._parse_float(rb_resp)
+        if rb_val is not None:
             self.status.channels[ch - 1].current_limit = rb_val
-            return cmd, rb_val
-        except (ValueError, TypeError):
-            return cmd, None
+        return f"TEC:CHAN {ch};{cmd}", rb_val
 
     async def set_voltage_limit(self, ch: int, value: float) -> tuple[Optional[str], Optional[float]]:
-        """Set voltage limit. Returns (raw_command, readback_value) or (None, None) on failure."""
-        cmd = f"TEC:LIM:V {ch} {value:.3f}"
+        """Set voltage limit with readback verification."""
+        if not await self._select_channel(ch):
+            return None, None
+        cmd = f"TEC:LIMit:V {value:.3f}"
         resp = await self._send_command(cmd)
         if resp is None:
             return None, None
-        rb_cmd = f"TEC:LIM:V? {ch}"
-        rb_resp = await self._send_command(rb_cmd)
+        rb_resp = await self._send_command("TEC:LIMit:V?")
         if rb_resp is None:
-            return cmd, None
-        try:
-            rb_val = float("".join(c for c in rb_resp if c in "0123456789.-+eE"))
+            return f"TEC:CHAN {ch};{cmd}", None
+        rb_val = self._parse_float(rb_resp)
+        if rb_val is not None:
             self.status.channels[ch - 1].voltage_limit = rb_val
-            return cmd, rb_val
-        except (ValueError, TypeError):
-            return cmd, None
+        return f"TEC:CHAN {ch};{cmd}", rb_val
+
+    # ── Poll loop ──────────────────────────────────────────────────
 
     async def _poll_loop(self) -> None:
         """Main polling loop with reconnection and graceful degradation."""
         backoff_idx = 0
         while self._running:
-            # Connect if needed
             if not self.status.connected:
                 ok = await self._connect()
                 if not ok:
@@ -301,7 +431,6 @@ class ArroyoDriver:
                     continue
                 backoff_idx = 0
 
-            # Poll
             ok = await self._poll_once()
             if ok:
                 self.status.consecutive_failures = 0
@@ -323,7 +452,7 @@ class ArroyoDriver:
             await asyncio.sleep(self._poll_period)
 
 
-# ── Simulated driver (for development / UI testing) ────────────────
+# ── Simulated driver ──────────────────────────────────────────────
 
 class SimulatedDriver:
     """Drop-in replacement that generates plausible TEC readings.
@@ -344,7 +473,6 @@ class SimulatedDriver:
         on_event: EventCallback = None,
     ) -> None:
         self.device_id = device_id
-        # Realistic setpoints for a multi-channel TEC setup
         setpoints = [22.0, 25.0, 20.0, 20.0]
         channels = []
         for i in range(num_channels):
@@ -391,7 +519,6 @@ class SimulatedDriver:
             t = time.time() - self._t0
             for ch in self.status.channels:
                 if ch.output_state:
-                    # Gentle drift around setpoint
                     drift = 0.05 * math.sin(t * 0.3 + ch.channel) + random.gauss(0, 0.02)
                     ch.actual_temp = round(ch.setpoint + drift, 2)
                     ch.current = round(abs(0.8 + 0.3 * math.sin(t * 0.1 + ch.channel)) + random.gauss(0, 0.02), 2)
@@ -408,21 +535,21 @@ class SimulatedDriver:
     # ── Write methods (Phase 2) ────────────────────────────────────
 
     async def set_setpoint(self, ch: int, value: float) -> tuple[Optional[str], Optional[float]]:
-        cmd = f"TEC:T {ch} {value:.3f}"
+        cmd = f"TEC:CHAN {ch};TEC:T {value:.3f}"
         self.status.channels[ch - 1].setpoint = value
         return cmd, value
 
     async def set_output(self, ch: int, state: bool) -> tuple[Optional[str], Optional[bool]]:
-        cmd = f"TEC:OUT {ch} {'1' if state else '0'}"
+        cmd = f"TEC:CHAN {ch};TEC:OUTput {'1' if state else '0'}"
         self.status.channels[ch - 1].output_state = state
         return cmd, state
 
     async def set_current_limit(self, ch: int, value: float) -> tuple[Optional[str], Optional[float]]:
-        cmd = f"TEC:LIM:ITE {ch} {value:.3f}"
+        cmd = f"TEC:CHAN {ch};TEC:LIMit:ITE {value:.3f}"
         self.status.channels[ch - 1].current_limit = value
         return cmd, value
 
     async def set_voltage_limit(self, ch: int, value: float) -> tuple[Optional[str], Optional[float]]:
-        cmd = f"TEC:LIM:V {ch} {value:.3f}"
+        cmd = f"TEC:CHAN {ch};TEC:LIMit:V {value:.3f}"
         self.status.channels[ch - 1].voltage_limit = value
         return cmd, value

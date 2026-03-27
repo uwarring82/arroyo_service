@@ -112,7 +112,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     await _audit.close()
 
 
-app = FastAPI(title="Arroyo TEC Gateway", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="Arroyo TEC Gateway", version="0.2.0-bench", lifespan=lifespan)
 
 
 # ── Request models ─────────────────────────────────────────────────
